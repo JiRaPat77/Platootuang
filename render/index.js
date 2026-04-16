@@ -1,48 +1,40 @@
+// ============================================================
+//  index.js — ปลาทูทวง ClassBot v3
+//  LINE Bot + Google Sheets
+// ============================================================
+
 const express = require('express');
 const line    = require('@line/bot-sdk');
-const { google } = require('googleapis');
+const sheets  = require('./sheets');
+const flex    = require('./flex');
+const fs      = require('fs');
 
 const app = express();
 
-// ===== ตั้งค่าตรงนี้ =====
 const config = {
-  channelSecret:     process.env.LINE_CHANNEL_SECRET,
+  channelSecret:      process.env.LINE_CHANNEL_SECRET,
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
 };
-const MASTER_FOLDER_NAME = process.env.FOLDER_NAME || 'Platootuang';
-// =========================
 
-const client = new line.Client(config);
-
-// Google Auth จาก Environment Variable
-function getGoogleAuth() {
-  const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-  return new google.auth.GoogleAuth({
-    credentials,
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive',
-    ],
-  });
-}
-
-// ---- Registry: เก็บ groupId → sheetId ใน memory (ใช้ชั่วคราว) ----
-// สำหรับ production ควรเก็บใน DB แต่สำหรับตอนนี้ใช้ file-based registry
-const fs = require('fs');
-const REGISTRY_FILE = '/tmp/registry.json';
+const client      = new line.Client(config);
+const BASE_URL    = process.env.BASE_URL || 'https://platootuang.onrender.com';
+const TEACHER_WEB = `${BASE_URL}/teacher`;
+const REGISTRY_PATH = '/tmp/registry.json';
 
 function getRegistry() {
-  try {
-    return JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8'));
-  } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')); }
+  catch { return {}; }
 }
 function saveRegistry(data) {
-  fs.writeFileSync(REGISTRY_FILE, JSON.stringify(data));
+  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(data, null, 2));
 }
 
-// ---- Webhook endpoint ----
+// ============================================================
+//  Webhook
+// ============================================================
+
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  res.status(200).send('OK'); // ตอบ LINE ทันที
+  res.status(200).send('OK');
   try {
     await Promise.all(req.body.events.map(handleEvent));
   } catch (err) {
@@ -50,16 +42,19 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.send('ClassBot is running!'));
+app.get('/', (req, res) => res.send('🐟 ปลาทูทวง กำลังทำงานอยู่!'));
 
-// ---- Router ----
+// ============================================================
+//  Event Router
+// ============================================================
+
 async function handleEvent(event) {
   const { type, source, replyToken } = event;
   const groupId = source.groupId || null;
   const userId  = source.userId;
 
   if (type === 'join' && groupId) {
-    await setupNewGroup(groupId);
+    await onBotJoin(groupId, replyToken);
     return;
   }
 
@@ -68,259 +63,333 @@ async function handleEvent(event) {
   }
 }
 
-// ---- สร้าง Sheet ใหม่เมื่อ Bot เข้ากลุ่ม ----
-async function setupNewGroup(groupId) {
+// ============================================================
+//  Bot เข้ากลุ่มครั้งแรก
+// ============================================================
+
+async function onBotJoin(groupId, replyToken) {
   const registry = getRegistry();
-  if (registry[groupId]) return;
-
-  const auth    = getGoogleAuth();
-  const drive   = google.drive({ version: 'v3', auth });
-  const sheets  = google.sheets({ version: 'v4', auth });
-
-  // สร้าง Spreadsheet
-  const ss = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: 'ห้องเรียน – ClassBot' },
-      sheets: [
-        { properties: { title: 'นักเรียน' } },
-        { properties: { title: 'งาน' } },
-        { properties: { title: 'การส่งงาน' } },
-        { properties: { title: 'ประวัติคะแนน' } },
-      ],
-    },
-  });
-  const sheetId = ss.data.spreadsheetId;
-
-  // ใส่ header แต่ละแท็บ
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: {
-      valueInputOption: 'RAW',
-      data: [
-        { range: 'นักเรียน!A1:D1', values: [['lineId','ชื่อ-นามสกุล','คะแนนรวม','วันที่ลงทะเบียน']] },
-        { range: 'งาน!A1:F1',      values: [['id','ชื่องาน','วิชา','รายละเอียด','วันส่ง','วันที่มอบหมาย']] },
-        { range: 'การส่งงาน!A1:F1', values: [['lineId','ชื่อนักเรียน','ชื่องาน','วันที่ส่ง','คะแนน','หมายเหตุครู']] },
-        { range: 'ประวัติคะแนน!A1:F1', values: [['lineId','ชื่อนักเรียน','คะแนน','เหตุผล','วันที่','ให้โดย']] },
-      ],
-    },
-  });
-
-  // ย้ายเข้าโฟลเดอร์
-  const folderRes = await drive.files.list({
-    q: `name='${MASTER_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-    fields: 'files(id)',
-  });
-  let folderId;
-  if (folderRes.data.files.length > 0) {
-    folderId = folderRes.data.files[0].id;
-  } else {
-    const f = await drive.files.create({
-      requestBody: { name: MASTER_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' },
-      fields: 'id',
+  if (registry[groupId]) {
+    await client.replyMessage(replyToken, {
+      type: 'text',
+      text: '🐟 ปลาทูทวงกลับมาแล้วครับ! พิมพ์ @ปลาทูทวง วิธีใช้ เพื่อดูคำสั่งทั้งหมดครับ',
     });
-    folderId = f.data.id;
+    return;
   }
-  await drive.files.update({ fileId: sheetId, addParents: folderId, removeParents: 'root', fields: 'id' });
-
-  // บันทึก registry
-  registry[groupId] = { sheetId, name: 'ห้องเรียน – ClassBot' };
-  saveRegistry(registry);
-
-  const url = `https://docs.google.com/spreadsheets/d/${sheetId}`;
-  await client.pushMessage(groupId, {
-    type: 'text',
-    text: '🎉 ระบบ ClassBot พร้อมใช้งานแล้ว!\n\n📊 Google Sheet ของห้องนี้:\n' + url +
-          '\n\nตั้งชื่อห้อง: /setup ชื่อห้อง\nดูคำสั่งทั้งหมด: /help',
-  });
+  const setupUrl = `${TEACHER_WEB}/setup?groupId=${groupId}`;
+  await client.replyMessage(replyToken, flex.welcomeCard(setupUrl));
 }
 
-// ---- จัดการคำสั่ง ----
-async function handleText(text, userId, groupId, replyToken) {
-  const cmd  = text.split(' ')[0].toLowerCase();
-  const args = text.slice(cmd.length).trim();
+// ============================================================
+//  Command Router
+// ============================================================
 
-  if (cmd === '/help') return replyHelp(replyToken);
+async function handleText(text, userId, groupId, replyToken) {
+  const isAt  = text.startsWith('@ปลาทูทวง') || text.startsWith('@platootuang');
+  const isCmd = text.startsWith('/');
+  if (!isAt && !isCmd) return;
+
+  let cmd = '', args = '';
+  if (isAt) {
+    const body = text.replace(/^@ปลาทูทวง\s*/i, '').replace(/^@platootuang\s*/i, '');
+    const idx  = body.search(/\s/);
+    cmd  = idx === -1 ? body.toLowerCase() : body.slice(0, idx).toLowerCase();
+    args = idx === -1 ? '' : body.slice(idx + 1).trim();
+  } else {
+    const body = text.slice(1);
+    const idx  = body.search(/\s/);
+    cmd  = idx === -1 ? body.toLowerCase() : body.slice(0, idx).toLowerCase();
+    args = idx === -1 ? '' : body.slice(idx + 1).trim();
+  }
 
   const registry = getRegistry();
-  if (!groupId || !registry[groupId]) {
-    return client.replyMessage(replyToken, { type: 'text', text: '⚠️ ใช้คำสั่งนี้ในกลุ่มไลน์เท่านั้น' });
+  const roomInfo = groupId ? registry[groupId] : null;
+
+  if (cmd === 'วิธีใช้' || cmd === 'help') return replyHelp(replyToken, !!roomInfo);
+
+  if (!groupId || !roomInfo) {
+    return client.replyMessage(replyToken, {
+      type: 'text',
+      text: '⚠️ กรุณาใช้คำสั่งนี้ในกลุ่มไลน์ห้องเรียนนะครับ',
+    });
   }
-  const sheetId = registry[groupId].sheetId;
+
+  const sheetId = roomInfo.sheetId;
 
   switch (cmd) {
-    case '/setup':    return setupRoom(sheetId, args, replyToken);
-    case '/register': return registerStudent(sheetId, userId, args, replyToken);
-    case '/homework':
-    case '/hw':       return addHomework(sheetId, groupId, args, replyToken);
-    case '/done':     return submitWork(sheetId, userId, args, replyToken);
-    case '/status':   return showStatus(sheetId, userId, replyToken);
-    case '/score':    return showScore(sheetId, userId, replyToken);
-    case '/rank':     return showRank(sheetId, replyToken);
-    case '/give':     return giveScore(sheetId, args, replyToken);
-    case '/report':   return showReport(sheetId, replyToken);
+    case 'ลงทะเบียน':
+    case 'register':
+      return cmdRegister(sheetId, userId, args, replyToken);
+    case 'งานของฉัน':
+    case 'งานฉัน':
+      return cmdMyTasks(sheetId, userId, replyToken);
+    case 'คะแนนของฉัน':
+    case 'คะแนนฉัน':
+      return cmdMyScore(sheetId, userId, replyToken);
+    case 'งานด่วน':
+      return cmdUrgentTasks(sheetId, userId, replyToken);
+    case 'งานวันนี้':
+      return cmdTodayTasks(sheetId, replyToken);
+    case 'ส่งงาน':
+      return cmdSubmit(sheetId, userId, args, replyToken);
+    case 'รายงาน':
+    case 'report':
+      return cmdReport(sheetId, roomInfo.roomName, args, replyToken);
+    case 'อันดับ':
+    case 'rank':
+      return cmdRank(sheetId, roomInfo.roomName, replyToken);
+    default:
+      return client.replyMessage(replyToken, {
+        type: 'text',
+        text: '🤔 ไม่รู้จักคำสั่งนั้นครับ พิมพ์ @ปลาทูทวง วิธีใช้ เพื่อดูคำสั่งทั้งหมดครับ',
+      });
   }
 }
 
-async function replyHelp(replyToken) {
-  return client.replyMessage(replyToken, {
+// ============================================================
+//  Handlers
+// ============================================================
+
+async function replyHelp(replyToken, inGroup) {
+  const msg = inGroup
+    ? `📚 คำสั่งปลาทูทวงทั้งหมด\n─────────────────\n👩‍🎓 นักเรียน\n@ปลาทูทวง ลงทะเบียน ชื่อ-นามสกุล\n@ปลาทูทวง ส่งงาน [รหัสงาน]\n@ปลาทูทวง งานของฉัน\n@ปลาทูทวง คะแนนของฉัน\n@ปลาทูทวง งานด่วน\n@ปลาทูทวง งานวันนี้\n\n👩‍🏫 ครู\n@ปลาทูทวง รายงาน\n@ปลาทูทวง รายงาน [ชื่องาน]\n@ปลาทูทวง อันดับ`
+    : '⚠️ กรุณาใช้คำสั่งนี้ในกลุ่มไลน์ห้องเรียนนะครับ';
+  return client.replyMessage(replyToken, { type: 'text', text: msg });
+}
+
+async function cmdRegister(sheetId, userId, name, replyToken) {
+  if (!name) return client.replyMessage(replyToken, { type: 'text', text: '⚠️ ระบุชื่อด้วยนะครับ เช่น @ปลาทูทวง ลงทะเบียน สมชาย ใจดี' });
+  const result = await sheets.registerStudent(sheetId, userId, name);
+  if (result.exists) return client.replyMessage(replyToken, { type: 'text', text: `⚠️ ลงทะเบียนไปแล้วในชื่อ "${result.name}" ครับ` });
+  return client.replyMessage(replyToken, { type: 'text', text: `✅ ลงทะเบียนสำเร็จ! ยินดีต้อนรับ ${name} 🎉` });
+}
+
+async function cmdMyTasks(sheetId, userId, replyToken) {
+  const studentName = await sheets.getStudentName(sheetId, userId);
+  if (!studentName) return client.replyMessage(replyToken, { type: 'text', text: '⚠️ กรุณาลงทะเบียนก่อนนะครับ' });
+
+  const allTasks     = (await sheets.getAllTasks(sheetId)).filter(t => t.status !== 'deleted');
+  const submitted    = await sheets.getSubmissionsByStudent(sheetId, userId);
+  const submittedIds = submitted.map(s => s[2]);
+  const doneTasks    = allTasks.filter(t => submittedIds.includes(t.taskId));
+  const pendingTasks = allTasks.filter(t => !submittedIds.includes(t.taskId) && t.status === 'open');
+
+  return client.replyMessage(replyToken, flex.myTasksCard(studentName, doneTasks, pendingTasks));
+}
+
+async function cmdMyScore(sheetId, userId, replyToken) {
+  const studentName = await sheets.getStudentName(sheetId, userId);
+  if (!studentName) return client.replyMessage(replyToken, { type: 'text', text: '⚠️ กรุณาลงทะเบียนก่อนนะครับ' });
+  const totalScore = await sheets.getStudentScore(sheetId, userId);
+  const rankings   = await sheets.getRanking(sheetId);
+  const rank       = rankings.findIndex(r => r.lineId === userId) + 1;
+  return client.replyMessage(replyToken, flex.scoreCard(studentName, totalScore, rank, rankings.length));
+}
+
+async function cmdUrgentTasks(sheetId, userId, replyToken) {
+  const studentName = await sheets.getStudentName(sheetId, userId);
+  if (!studentName) return client.replyMessage(replyToken, { type: 'text', text: '⚠️ กรุณาลงทะเบียนก่อนนะครับ' });
+
+  const allTasks     = (await sheets.getAllTasks(sheetId)).filter(t => t.status === 'open');
+  const submitted    = await sheets.getSubmissionsByStudent(sheetId, userId);
+  const submittedIds = submitted.map(s => s[2]);
+  const today        = new Date();
+  const in3Days      = new Date(); in3Days.setDate(today.getDate() + 3);
+
+  const urgent = allTasks.filter(t => {
+    if (submittedIds.includes(t.taskId)) return false;
+    const due = parseThaiDate(t.dueDate);
+    return due && due <= in3Days;
+  });
+
+  if (!urgent.length) return client.replyMessage(replyToken, { type: 'text', text: '✅ ไม่มีงานด่วนใน 3 วันนี้ครับ สบายใจได้เลย!' });
+  return client.replyMessage(replyToken, flex.todayTasksCard(urgent));
+}
+
+async function cmdTodayTasks(sheetId, replyToken) {
+  const allTasks   = (await sheets.getAllTasks(sheetId)).filter(t => t.status === 'open');
+  const today      = new Date().toLocaleDateString('th-TH');
+  const todayTasks = allTasks.filter(t => t.dueDate === today);
+  return client.replyMessage(replyToken, flex.todayTasksCard(todayTasks));
+}
+
+async function cmdSubmit(sheetId, userId, taskId, replyToken) {
+  if (!taskId) {
+    const openTasks = (await sheets.getAllTasks(sheetId)).filter(t => t.status === 'open');
+    if (!openTasks.length) return client.replyMessage(replyToken, { type: 'text', text: '📭 ขณะนี้ไม่มีงานที่เปิดรับส่งครับ' });
+    const list = openTasks.map(t => `• ${t.name} (${t.taskId})`).join('\n');
+    return client.replyMessage(replyToken, { type: 'text', text: `📋 งานที่เปิดรับส่ง:\n${list}\n\nพิมพ์ @ปลาทูทวง ส่งงาน [รหัสงาน]` });
+  }
+
+  const result = await sheets.submitWork(sheetId, userId, taskId, '');
+  if (!result.success) {
+    const msgs = {
+      not_registered: '⚠️ กรุณาลงทะเบียนก่อนนะครับ',
+      task_not_found: '⚠️ ไม่พบรหัสงานนั้นครับ',
+      task_closed:    '🔒 งานนี้ปิดรับส่งแล้วครับ',
+    };
+    return client.replyMessage(replyToken, { type: 'text', text: msgs[result.reason] || '⚠️ เกิดข้อผิดพลาดครับ' });
+  }
+
+  const extra = result.isResubmit ? '\n📝 (บันทึกทับงานเดิมแล้ว ครูจะเห็นไฟล์ล่าสุดครับ)' : '';
+  return client.replyMessage(replyToken, { type: 'text', text: `✅ ส่งงาน "${result.taskName}" สำเร็จ!\n🌟 ${result.studentName}${extra}` });
+}
+
+async function cmdReport(sheetId, roomName, taskName, replyToken) {
+  const allTasks = (await sheets.getAllTasks(sheetId)).filter(t => t.status !== 'deleted');
+  const students = await sheets.getAllStudents(sheetId);
+  const total    = students.length;
+  const today    = new Date();
+
+  if (taskName) {
+    const task = allTasks.find(t => t.name.includes(taskName) || t.taskId === taskName);
+    if (!task) return client.replyMessage(replyToken, { type: 'text', text: `⚠️ ไม่พบงานชื่อ "${taskName}" ครับ` });
+    const subs         = await sheets.getSubmissionsByTask(sheetId, task.taskId);
+    const submittedIds = subs.map(s => s[0]);
+    const notSub       = students.filter(s => !submittedIds.includes(s[0]));
+    return client.replyMessage(replyToken, {
+      type: 'text',
+      text: `📊 ${task.name}\n✅ ส่งแล้ว: ${subs.length}/${total} คน\n⏳ ยังไม่ส่ง: ${notSub.length} คน\n\n${notSub.map(s => s[1]).join(', ') || 'ทุกคนส่งแล้ว! 🎉'}`,
+    });
+  }
+
+  const summaries = await Promise.all(
+    allTasks.map(async t => {
+      const subs = await sheets.getSubmissionsByTask(sheetId, t.taskId);
+      const due  = parseThaiDate(t.dueDate);
+      return {
+        ...t, submitted: subs.length, total,
+        isOverdue: due && due < today,
+        isNear:    due && due >= today && (due - today) / 86400000 <= 3,
+      };
+    })
+  );
+
+  return client.replyMessage(replyToken, flex.reportCard(
+    roomName,
+    summaries.filter(t => t.status === 'open' && !t.isOverdue && !t.isNear),
+    summaries.filter(t => t.isOverdue),
+    summaries.filter(t => t.isNear && !t.isOverdue),
+  ));
+}
+
+async function cmdRank(sheetId, roomName, replyToken) {
+  const rankings = await sheets.getRanking(sheetId);
+  if (!rankings.length) return client.replyMessage(replyToken, { type: 'text', text: '⚠️ ยังไม่มีนักเรียนลงทะเบียนครับ' });
+  return client.replyMessage(replyToken, flex.rankingCard(roomName, rankings));
+}
+
+// ============================================================
+//  REST API สำหรับหน้าเว็บครู
+// ============================================================
+
+app.use(express.json());
+
+app.post('/api/setup', async (req, res) => {
+  const { groupId, roomName, year, semester } = req.body;
+  if (!groupId || !roomName || !year || !semester) return res.status(400).json({ error: 'ข้อมูลไม่ครบ' });
+
+  const registry = getRegistry();
+  if (registry[groupId]) return res.status(400).json({ error: 'ห้องนี้ตั้งค่าไปแล้ว' });
+
+  const result = await sheets.createRoomSheet(roomName, year, semester);
+  registry[groupId] = { sheetId: result.sheetId, roomName, year, semester, folderId: result.folderId };
+  saveRegistry(registry);
+
+  await client.pushMessage(groupId, {
     type: 'text',
-    text: '📚 ClassBot คำสั่งทั้งหมด\n─────────────────\n' +
-          '👩‍🎓 นักเรียน\n/register ชื่อ-นามสกุล\n/done ชื่องาน\n' +
-          '/status — งานที่ค้างอยู่\n/score — คะแนนของฉัน\n/rank — อันดับทั้งห้อง\n\n' +
-          '👩‍🏫 ครู\n/setup ชื่อห้อง\n/hw ชื่องาน | วิชา | วันส่ง\n' +
-          '/give ชื่อ คะแนน เหตุผล\n/report — สรุปการส่งงาน',
+    text: `✅ ตั้งค่าห้อง "${roomName}" สำเร็จแล้วครับ!\n📊 Sheet: https://docs.google.com/spreadsheets/d/${result.sheetId}\n\nพิมพ์ @ปลาทูทวง วิธีใช้ เพื่อดูคำสั่งทั้งหมดครับ`,
   });
-}
 
-async function setupRoom(sheetId, name, replyToken) {
-  if (!name) return replyMsg(replyToken, '⚠️ ระบุชื่อห้องด้วย เช่น /setup ม.1/1');
-  const auth   = getGoogleAuth();
-  const drive  = google.drive({ version: 'v3', auth });
-  const sheets = google.sheets({ version: 'v4', auth });
-  const title  = 'ห้อง ' + name + ' – ClassBot';
-  await drive.files.update({ fileId: sheetId, requestBody: { name: title } });
-  await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetId, requestBody: { requests: [{ updateSpreadsheetProperties: { properties: { title }, fields: 'title' } }] } });
-  return replyMsg(replyToken, '✅ ตั้งชื่อห้องเป็น "' + name + '" เรียบร้อย!');
-}
+  res.json({ success: true, sheetId: result.sheetId });
+});
 
-async function registerStudent(sheetId, userId, name, replyToken) {
-  if (!name) return replyMsg(replyToken, '⚠️ ระบุชื่อด้วย เช่น /register สมชาย ใจดี');
-  const auth   = getGoogleAuth();
-  const sheets = google.sheets({ version: 'v4', auth });
-  const res    = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:D' });
-  const rows   = res.data.values || [];
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === userId) return replyMsg(replyToken, '⚠️ ลงทะเบียนไปแล้วในชื่อ "' + rows[i][1] + '"');
+app.get('/api/rooms', (req, res) => {
+  const registry = getRegistry();
+  res.json(Object.entries(registry).map(([groupId, info]) => ({ groupId, ...info })));
+});
+
+app.get('/api/rooms/:groupId/tasks', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  const allTasks = await sheets.getAllTasks(roomInfo.sheetId);
+  const students = await sheets.getAllStudents(roomInfo.sheetId);
+  const tasks    = await Promise.all(
+    allTasks.filter(t => t.status !== 'deleted').map(async t => {
+      const subs = await sheets.getSubmissionsByTask(roomInfo.sheetId, t.taskId);
+      return { ...t, submitted: subs.length, total: students.length };
+    })
+  );
+  res.json(tasks);
+});
+
+app.post('/api/rooms/:groupId/tasks', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  const { taskData, notifyGroup } = req.body;
+  const taskId = await sheets.createTask(roomInfo.sheetId, taskData, `${roomInfo.year} เทอม ${roomInfo.semester}`);
+  if (notifyGroup) {
+    const task = await sheets.getTaskById(roomInfo.sheetId, taskId);
+    await client.pushMessage(req.params.groupId, flex.newTaskCard(task));
   }
-  await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: 'นักเรียน!A:D', valueInputOption: 'RAW', requestBody: { values: [[userId, name, 0, new Date().toLocaleDateString('th-TH')]] } });
-  return replyMsg(replyToken, '✅ ลงทะเบียนสำเร็จ! ยินดีต้อนรับ ' + name + ' 🎉');
-}
+  res.json({ success: true, taskId });
+});
 
-async function addHomework(sheetId, groupId, args, replyToken) {
-  const parts = args.split('|').map(s => s.trim());
-  if (parts.length < 3) return replyMsg(replyToken, '⚠️ รูปแบบ: /hw ชื่องาน | วิชา | วันส่ง');
-  const [taskName, subject, dueDate] = parts;
-  const auth   = getGoogleAuth();
-  const sheets = google.sheets({ version: 'v4', auth });
-  await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: 'งาน!A:F', valueInputOption: 'RAW', requestBody: { values: [['HW-' + Date.now(), taskName, subject, '', dueDate, new Date().toLocaleDateString('th-TH')]] } });
-  await client.pushMessage(groupId, { type: 'text', text: '📢 งานใหม่!\n📝 ' + taskName + '\n📚 ' + subject + '\n📅 ส่งภายใน: ' + dueDate + '\n\nพิมพ์ /done ' + taskName + ' เมื่อส่งงานแล้ว' });
-}
+app.patch('/api/rooms/:groupId/tasks/:taskId/status', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  await sheets.updateTaskStatus(roomInfo.sheetId, req.params.taskId, req.body.status);
+  res.json({ success: true });
+});
 
-async function submitWork(sheetId, userId, taskName, replyToken) {
-  if (!taskName) return replyMsg(replyToken, '⚠️ ระบุชื่องานด้วย เช่น /done รายงาน');
-  const auth    = getGoogleAuth();
-  const sheets  = google.sheets({ version: 'v4', auth });
-  const name    = await getStudentName(sheets, sheetId, userId);
-  if (!name) return replyMsg(replyToken, '⚠️ กรุณา /register ชื่อก่อนนะคะ');
-  await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: 'การส่งงาน!A:F', valueInputOption: 'RAW', requestBody: { values: [[userId, name, taskName, new Date().toLocaleDateString('th-TH'), '', '']] } });
-  await addScoreRecord(sheets, sheetId, userId, name, 5, 'ส่งงาน: ' + taskName, 'ระบบ');
-  return replyMsg(replyToken, '✅ บันทึกการส่ง "' + taskName + '" แล้ว!\n🌟 ได้รับ +5 คะแนน');
-}
+app.patch('/api/rooms/:groupId/tasks/:taskId/rename', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  const { newName, notify, oldName } = req.body;
+  await sheets.updateTaskName(roomInfo.sheetId, req.params.taskId, newName);
+  if (notify) await client.pushMessage(req.params.groupId, flex.taskChangedCard('rename', oldName, newName));
+  res.json({ success: true });
+});
 
-async function showStatus(sheetId, userId, replyToken) {
-  const auth    = getGoogleAuth();
-  const sheets  = google.sheets({ version: 'v4', auth });
-  const name    = await getStudentName(sheets, sheetId, userId);
-  if (!name) return replyMsg(replyToken, '⚠️ กรุณา /register ชื่อก่อนนะคะ');
-  const [tasksRes, subRes] = await Promise.all([
-    sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'งาน!A:F' }),
-    sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'การส่งงาน!A:F' }),
-  ]);
-  const allTasks  = (tasksRes.data.values || []).slice(1);
-  const submitted = (subRes.data.values || []).slice(1).filter(r => r[0] === userId).map(r => r[2]);
-  const pending   = allTasks.filter(t => !submitted.includes(t[1]));
-  if (!pending.length) return replyMsg(replyToken, '🎉 ส่งงานครบทุกชิ้นแล้ว!');
-  let msg = '📋 งานที่ยังค้าง (' + pending.length + ' ชิ้น)\n─────────────────\n';
-  pending.forEach(t => { msg += '• ' + t[1] + ' วิชา: ' + t[2] + '\n  📅 ส่ง: ' + t[4] + '\n'; });
-  return replyMsg(replyToken, msg);
-}
+app.delete('/api/rooms/:groupId/tasks/:taskId', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  const { notify, taskName } = req.body;
+  await sheets.deleteTask(roomInfo.sheetId, req.params.taskId);
+  if (notify) await client.pushMessage(req.params.groupId, flex.taskChangedCard('delete', taskName));
+  res.json({ success: true });
+});
 
-async function showScore(sheetId, userId, replyToken) {
-  const auth   = getGoogleAuth();
-  const sheets = google.sheets({ version: 'v4', auth });
-  const res    = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:C' });
-  const rows   = (res.data.values || []).slice(1);
-  const row    = rows.find(r => r[0] === userId);
-  if (!row) return replyMsg(replyToken, '⚠️ กรุณา /register ชื่อก่อนนะคะ');
-  return replyMsg(replyToken, '⭐ คะแนนของ ' + row[1] + '\n🏆 ' + (row[2] || 0) + ' คะแนน');
-}
-
-async function showRank(sheetId, replyToken) {
-  const auth   = getGoogleAuth();
-  const sheets = google.sheets({ version: 'v4', auth });
-  const res    = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:C' });
-  const rows   = (res.data.values || []).slice(1);
-  if (!rows.length) return replyMsg(replyToken, '⚠️ ยังไม่มีนักเรียนลงทะเบียน');
-  const sorted = rows.sort((a, b) => (parseInt(b[2]) || 0) - (parseInt(a[2]) || 0));
-  const medals = ['🥇','🥈','🥉'];
-  let msg = '🏆 อันดับคะแนน\n─────────────────\n';
-  sorted.slice(0, 10).forEach((s, i) => { msg += (medals[i] || (i+1)+'.') + ' ' + s[1] + ' — ' + (s[2] || 0) + ' คะแนน\n'; });
-  return replyMsg(replyToken, msg);
-}
-
-async function giveScore(sheetId, args, replyToken) {
-  const parts = args.split(' ');
-  if (parts.length < 2) return replyMsg(replyToken, '⚠️ รูปแบบ: /give ชื่อ คะแนน เหตุผล');
-  const targetName = parts[0];
-  const score      = parseInt(parts[1]) || 0;
-  const reason     = parts.slice(2).join(' ') || 'ครูให้คะแนน';
-  const auth   = getGoogleAuth();
-  const sheets = google.sheets({ version: 'v4', auth });
-  const res    = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:B' });
-  const rows   = (res.data.values || []).slice(1);
-  const row    = rows.find(r => r[1] && r[1].includes(targetName));
-  if (!row) return replyMsg(replyToken, '⚠️ ไม่พบนักเรียนชื่อ "' + targetName + '"');
-  await addScoreRecord(sheets, sheetId, row[0], row[1], score, reason, 'ครู');
-  return replyMsg(replyToken, '✅ ให้ ' + row[1] + ' +' + score + ' คะแนน\nเหตุผล: ' + reason);
-}
-
-async function showReport(sheetId, replyToken) {
-  const auth   = getGoogleAuth();
-  const sheets = google.sheets({ version: 'v4', auth });
-  const [tasksRes, subRes, studRes] = await Promise.all([
-    sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'งาน!A:F' }),
-    sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'การส่งงาน!A:F' }),
-    sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:B' }),
-  ]);
-  const tasks    = (tasksRes.data.values || []).slice(1);
-  const submitted = (subRes.data.values || []).slice(1);
-  const students  = (studRes.data.values || []).slice(1);
-  if (!tasks.length) return replyMsg(replyToken, '⚠️ ยังไม่มีงานที่มอบหมาย');
-  let msg = '📊 รายงานสรุปการส่งงาน\n─────────────────\n';
-  tasks.forEach(task => {
-    const subs   = submitted.filter(s => s[2] === task[1]).map(s => s[0]);
-    const notYet = students.filter(s => !subs.includes(s[0])).map(s => s[1]);
-    msg += '📝 ' + task[1] + '\n✅ ส่งแล้ว: ' + subs.length + '/' + students.length + ' คน\n';
-    if (notYet.length) msg += '⏳ ยังไม่ส่ง: ' + notYet.join(', ') + '\n';
-    msg += '\n';
+app.get('/api/rooms/:groupId/tasks/:taskId/submissions', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  const subs     = await sheets.getSubmissionsByTask(roomInfo.sheetId, req.params.taskId);
+  const students = await sheets.getAllStudents(roomInfo.sheetId);
+  const submittedIds = subs.map(s => s[0]);
+  res.json({
+    submitted:    subs.map(s => ({ lineId: s[0], name: s[1], submittedAt: s[4], fileUrl: s[5], count: s[6] })),
+    notSubmitted: students.filter(s => !submittedIds.includes(s[0])).map(s => ({ lineId: s[0], name: s[1] })),
   });
-  return replyMsg(replyToken, msg);
-}
+});
 
-// ---- Helpers ----
-async function getStudentName(sheets, sheetId, userId) {
-  const res  = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:B' });
-  const rows = (res.data.values || []).slice(1);
-  const row  = rows.find(r => r[0] === userId);
-  return row ? row[1] : null;
-}
+app.post('/api/rooms/:groupId/tasks/:taskId/score', async (req, res) => {
+  const roomInfo = getRegistry()[req.params.groupId];
+  if (!roomInfo) return res.status(404).json({ error: 'ไม่พบห้อง' });
+  await sheets.updateScore(roomInfo.sheetId, req.body.lineId, req.params.taskId, req.body.score);
+  res.json({ success: true });
+});
 
-async function addScoreRecord(sheets, sheetId, userId, name, score, reason, giver) {
-  await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: 'ประวัติคะแนน!A:F', valueInputOption: 'RAW', requestBody: { values: [[userId, name, score, reason, new Date().toLocaleDateString('th-TH'), giver]] } });
-  const res  = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'นักเรียน!A:C' });
-  const rows = res.data.values || [];
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === userId) {
-      const newScore = (parseInt(rows[i][2]) || 0) + score;
-      await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `นักเรียน!C${i+1}`, valueInputOption: 'RAW', requestBody: { values: [[newScore]] } });
-      break;
-    }
-  }
-}
+// ============================================================
+//  Utility
+// ============================================================
 
-function replyMsg(replyToken, text) {
-  return client.replyMessage(replyToken, { type: 'text', text });
+function parseThaiDate(str) {
+  if (!str) return null;
+  try {
+    const [d, m, y] = str.split('/').map(Number);
+    return new Date(y - 543, m - 1, d);
+  } catch { return null; }
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('ClassBot running on port ' + PORT));
+app.listen(PORT, () => console.log(`🐟 ปลาทูทวง กำลังทำงานที่ port ${PORT}`));

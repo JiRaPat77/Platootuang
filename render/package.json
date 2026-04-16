@@ -1,14 +1,19 @@
 {
-  "name": "classbot",
-  "version": "1.0.0",
-  "description": "LINE Bot ระบบติดตามงานนักเรียน",
+  "name": "platootuang-classbot",
+  "version": "3.0.0",
+  "description": "ปลาทูทวง — ระบบติดตามงานนักเรียนผ่าน LINE",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "@line/bot-sdk": "^8.0.0",
     "express": "^4.18.2",
-    "googleapis": "^140.0.0"
+    "googleapis": "^140.0.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
   }
 }
