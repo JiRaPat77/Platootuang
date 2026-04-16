@@ -392,8 +392,6 @@ function parseThaiDate(str) {
   } catch { return null; }
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🐟 ปลาทูทวง กำลังทำงานที่ port ${PORT}`));
 
 // ============================================================
 //  API ทดสอบ Cron Manual
