@@ -7,13 +7,12 @@
 // ============================================================
 
 const cron   = require('node-cron');
-const line   = require('@line/bot-sdk');
 const sheets = require('./sheets');
 const flex   = require('./flex');
 const fs     = require('fs');
 
-const client = new line.Client({
-  channelSecret:      process.env.LINE_CHANNEL_SECRET,
+const { messagingApi } = require('@line/bot-sdk');
+const client = new messagingApi.MessagingApiClient({
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
 });
 

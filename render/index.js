@@ -9,15 +9,12 @@ const sheets  = require('./sheets');
 const flex    = require('./flex');
 const { startCron, runManualCheck } = require('./cron');
 const fs      = require('fs');
-
 const app = express();
 
-const config = {
-  channelSecret:      process.env.LINE_CHANNEL_SECRET,
-  channelAccessToken: process.env.LINE_ACCESS_TOKEN,
-};
 
-const client      = new line.Client(config);
+const client = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: process.env.LINE_ACCESS_TOKEN,
+});
 const BASE_URL    = process.env.BASE_URL || 'https://platootuang.onrender.com';
 const TEACHER_WEB = `${BASE_URL}/teacher`;
 const REGISTRY_PATH = './registry.json';
@@ -34,7 +31,7 @@ function saveRegistry(data) {
 //  Webhook
 // ============================================================
 
-app.post('/webhook', line.middleware(config), async (req, res) => {
+app.post('/webhook', line.middleware({ channelSecret: process.env.LINE_CHANNEL_SECRET }), async (req, res) => {
   res.status(200).send('OK');
   try {
     await Promise.all(req.body.events.map(handleEvent));
