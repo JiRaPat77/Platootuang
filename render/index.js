@@ -20,7 +20,7 @@ const config = {
 const client      = new line.Client(config);
 const BASE_URL    = process.env.BASE_URL || 'https://platootuang.onrender.com';
 const TEACHER_WEB = `${BASE_URL}/teacher`;
-const REGISTRY_PATH = '/tmp/registry.json';
+const REGISTRY_PATH = './registry.json';
 
 function getRegistry() {
   try { return JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')); }

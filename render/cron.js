@@ -17,7 +17,7 @@ const client = new line.Client({
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
 });
 
-const REGISTRY_PATH = '/tmp/registry.json';
+const REGISTRY_PATH = './registry.json';
 
 function getRegistry() {
   try { return JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')); }

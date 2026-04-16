@@ -138,7 +138,7 @@ async function createRichMenu() {
     console.log('✅ ตั้งเป็น Default Rich Menu สำเร็จ');
 
     // บันทึก richMenuId
-    fs.writeFileSync('/tmp/richmenu_id.txt', richMenuId);
+    fs.writeFileSync('./richmenu_id.txt', richMenuId);
     console.log(`\n🎉 Rich Menu พร้อมใช้งานแล้ว!`);
     console.log(`   ID: ${richMenuId}`);
     return richMenuId;
@@ -156,7 +156,7 @@ async function createRichMenu() {
 async function deleteRichMenu(richMenuId) {
   if (!richMenuId) {
     // ลองอ่านจากไฟล์
-    try { richMenuId = fs.readFileSync('/tmp/richmenu_id.txt', 'utf8').trim(); }
+    try { richMenuId = fs.readFileSync('./richmenu_id.txt', 'utf8').trim(); }
     catch { console.log('⚠️ ไม่พบ richMenuId'); return; }
   }
 
