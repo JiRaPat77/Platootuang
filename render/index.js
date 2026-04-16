@@ -7,6 +7,7 @@ const express = require('express');
 const line    = require('@line/bot-sdk');
 const sheets  = require('./sheets');
 const flex    = require('./flex');
+const { startCron, runManualCheck } = require('./cron');
 const fs      = require('fs');
 
 const app = express();
@@ -393,3 +394,26 @@ function parseThaiDate(str) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🐟 ปลาทูทวง กำลังทำงานที่ port ${PORT}`));
+
+// ============================================================
+//  API ทดสอบ Cron Manual
+// ============================================================
+
+app.post('/api/cron/run', async (req, res) => {
+  const secret = req.headers['x-cron-secret'];
+  if (secret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  res.json({ message: 'Cron กำลังทำงาน...' });
+  runManualCheck();
+});
+
+// ============================================================
+//  Start Server + Cron
+// ============================================================
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🐟 ปลาทูทวง กำลังทำงานที่ port ${PORT}`);
+  startCron();
+});
