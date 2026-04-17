@@ -11,8 +11,9 @@ const sheets = require('./sheets');
 const flex   = require('./flex');
 const fs     = require('fs');
 
-const { messagingApi } = require('@line/bot-sdk');
-const client = new messagingApi.MessagingApiClient({
+const line = require('@line/bot-sdk');
+const client = new line.Client({
+  channelSecret:      process.env.LINE_CHANNEL_SECRET,
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
 });
 
